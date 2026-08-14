@@ -1,0 +1,45 @@
+name: Deploy observability to k3s
+
+on:
+  push:
+    branches: [ "master" ]
+    paths:
+      - "k8s/**"
+      - ".github/workflows/**"
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply namespaces
+        run: |
+          kubectl apply -f k8s/00-namespaces.yaml
+
+      - name: Apply SigNoz CRDs (clickhouse-operator)
+        run: |
+          kubectl apply -f k8s/01-signoz-crds.yaml
+
+      - name: Apply SigNoz stack (clickhouse, query-service, frontend, collector)
+        run: |
+          kubectl apply -f k8s/02-signoz.yaml
+
+      - name: Apply OTel Collector DaemonSet
+        run: |
+          kubectl apply -f k8s/03-otel-collector.yaml
+
+      - name: Wait for rollouts
+        run: |
+          kubectl rollout status deployment/signoz-clickhouse-operator -n signoz --timeout=180s
+          kubectl rollout status statefulset/signoz-zookeeper -n signoz --timeout=180s
+          kubectl rollout status deployment/signoz-otel-collector -n signoz --timeout=180s
+          kubectl rollout status statefulset/signoz -n signoz --timeout=180s
+          kubectl rollout status daemonset/otel-collector -n observability --timeout=180s
+
+      - name: Wait for telemetrystore migration job
+        run: |
+          kubectl wait --for=condition=complete job/signoz-telemetrystore-migrator -n signoz --timeout=300s
