@@ -74,9 +74,11 @@ kubectl wait --for=condition=complete job/signoz-telemetrystore-migrator -n sign
 
 ### UI de SigNoz
 
+El `Service signoz` está expuesto en LAN con `type: NodePort` (puerto HTTP fijo). Si el puerto asigndo cambia, obtén el actual con:
+
 ```bash
-kubectl port-forward -n signoz svc/signoz 3301:3301
-# → http://localhost:3301
+kubectl get svc signoz -n signoz -o jsonpath='{.spec.ports[0].nodePort}'
+# → http://192.168.100.149:<nodePort>
 ```
 
 ### Env vars por servicio (ya agregadas en cada `k8s/deployment.yaml`)

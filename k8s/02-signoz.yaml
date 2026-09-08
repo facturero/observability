@@ -1602,11 +1602,11 @@ metadata:
     app.kubernetes.io/version: "v0.137.0"
     app.kubernetes.io/managed-by: Helm
 spec:
-  type: ClusterIP
+  type: NodePort
   ports:
     - name: http
-      port: 8080      
-      nodePort: null
+      port: 8080
+      nodePort: 30012
       protocol: TCP
       targetPort: http
     - name: http-internal
