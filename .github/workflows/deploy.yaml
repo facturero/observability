@@ -51,3 +51,24 @@ jobs:
       - name: Wait for telemetrystore migration job
         run: |
           kubectl wait --for=condition=complete job/signoz-telemetrystore-migrator -n signoz --timeout=300s
+
+  deploy-03-crm:
+    # DaemonSet intermedio que recibe OTLP de los servicios del CRM
+    # y lo reenvía a SigNoz en .183. Corre en el runner de .149
+    # (org-runner, label self-hosted).
+    runs-on: self-hosted
+
+    env:
+      KUBECONFIG: /home/server/.kube/config
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Apply otel-collector DaemonSet (namespace observability)
+        run: |
+          kubectl apply -f k8s/03-otel-collector.yaml
+
+      - name: Wait for rollout
+        run: |
+          kubectl rollout status ds/otel-collector -n observability --timeout=120s

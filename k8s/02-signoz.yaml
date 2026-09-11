@@ -847,7 +847,7 @@ spec:
 
     settings:
       format_schema_path: /etc/clickhouse-server/config.d/
-      max_server_memory_usage: "5368709120"
+      max_server_memory_usage: "7516192768"
       prometheus/endpoint: /metrics
       prometheus/port: 9363
       user_defined_executable_functions_config: /etc/clickhouse-server/functions/custom-functions.xml
@@ -1041,7 +1041,7 @@ spec:
                   memory: 200Mi
                 limits:
                   cpu: 2000m
-                  memory: 6Gi
+                  memory: 8Gi
 
     serviceTemplates:
       - name: service-template
