@@ -423,14 +423,73 @@ kind: ServiceAccount
 metadata:
   name: signoz-clickhouse-operator
   namespace: signoz
-  labels:
+  labels: 
     helm.sh/chart: clickhouse-24.1.18
     app.kubernetes.io/name: clickhouse
     app.kubernetes.io/instance: signoz
     app.kubernetes.io/component: operator
     app.kubernetes.io/version: "24.1.2"
     app.kubernetes.io/managed-by: Helm
-    clickhouse.altinity.com/chop: 0.21.2
+---
+# --- altinity/clickhouse-operator: the 5 ConfigMaps it mounts must exist.
+# --- El chart del operador los omite (referencias colgantes); en .149 se
+# --- crearon a mano en cada despliegue. Aquí van definidos para que un
+# --- `kubectl apply -f` limpio funcione sin pasos intermedios.
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signoz-clickhouse-operator-etc-files
+  namespace: signoz
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/instance: signoz
+    app.kubernetes.io/component: operator
+data: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signoz-clickhouse-operator-etc-confd-files
+  namespace: signoz
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/instance: signoz
+    app.kubernetes.io/component: operator
+data: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signoz-clickhouse-operator-etc-configd-files
+  namespace: signoz
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/instance: signoz
+    app.kubernetes.io/component: operator
+data: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signoz-clickhouse-operator-etc-templatesd-files
+  namespace: signoz
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/instance: signoz
+    app.kubernetes.io/component: operator
+data: {}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: signoz-clickhouse-operator-etc-usersd-files
+  namespace: signoz
+  labels:
+    app.kubernetes.io/name: clickhouse
+    app.kubernetes.io/instance: signoz
+    app.kubernetes.io/component: operator
+data: {}
 ---
 # --- source: charts\clickhouse\charts\zookeeper\templates/metrics-svc.yaml
 ---
@@ -788,6 +847,7 @@ spec:
 
     settings:
       format_schema_path: /etc/clickhouse-server/config.d/
+      max_server_memory_usage: "3221225472"
       prometheus/endpoint: /metrics
       prometheus/port: 9363
       user_defined_executable_functions_config: /etc/clickhouse-server/functions/custom-functions.xml
@@ -812,6 +872,15 @@ spec:
           <send_crash_reports replace="replace">
             <enabled>false</enabled>
           </send_crash_reports>
+        </clickhouse>
+      # Escucha en todas las interfaces en vez de loopback (el configd por
+      # defecto de este chart lo deja en localhost) y tolera binds fallidos
+      # (puertos SSL sin certificado). Sin esto ClickHouse abre el 9000 solo
+      # en localhost o muere con exit 210, y nada fluye hasta los repos.
+      config.d/listen.xml: |
+        <clickhouse>
+          <listen_host replace="replace">0.0.0.0</listen_host>
+          <listen_try>1</listen_try>
         </clickhouse>
       config.d/formatting.xml: |
         <clickhouse>
@@ -970,6 +1039,9 @@ spec:
                 requests:
                   cpu: 100m
                   memory: 200Mi
+                limits:
+                  cpu: 2000m
+                  memory: 4Gi
 
     serviceTemplates:
       - name: service-template
@@ -1535,7 +1607,10 @@ metadata:
     app.kubernetes.io/version: "v0.137.0"
     app.kubernetes.io/managed-by: Helm
 spec:
-  type: ClusterIP
+  # NodePort con puertos fijos: el cluster principal (.149) exporta aquí por LAN
+  # (http://192.168.100.183:30018). El 4317/4318 también sirve ingestion
+  # directa si algún servicio apunta a .183 en vez del DaemonSet intermedio.
+  type: NodePort
   ports:    
     - name: jaeger-grpc
       port: 14250
@@ -1566,12 +1641,12 @@ spec:
       port: 4317
       targetPort: otlp
       protocol: TCP
-      nodePort: null
+      nodePort: 30017
     - name: otlp-http
       port: 4318
       targetPort: otlp-http
       protocol: TCP
-      nodePort: null
+      nodePort: 30018
   selector:
     app.kubernetes.io/name: signoz
     app.kubernetes.io/instance: signoz

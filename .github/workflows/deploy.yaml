@@ -1,4 +1,4 @@
-name: Deploy observability to k3s
+name: Deploy observability (SigNoz) to observability node
 
 on:
   push:
@@ -9,8 +9,12 @@ on:
   workflow_dispatch: {}
 
 jobs:
-  deploy:
-    runs-on: self-hosted
+  deploy-signoz:
+    # Runner dedicado del nodo de observabilidad (k3s standalone .183).
+    # El runner del cluster del CRM (.149) NO debe desplegar esto: allí ya no
+    # vive SigNoz. (03-otel-collector.yaml lo aplica el operador a mano sobre
+    # el cluster .149 cuando sea necesario.)
+    runs-on: obs
 
     steps:
       - name: Checkout
@@ -28,17 +32,16 @@ jobs:
         run: |
           kubectl apply -f k8s/02-signoz.yaml
 
-      - name: Apply OTel Collector DaemonSet
-        run: |
-          kubectl apply -f k8s/03-otel-collector.yaml
+      # 03 (DaemonSet otel-collector) NO se aplica aquí: es el colector
+      # intermedio del cluster del CRM, su hogar es el cluster .149.
 
-      - name: Wait for rollouts
+      - name: Wait for operator, zookeeper, collector and query-service
         run: |
           kubectl rollout status deployment/signoz-clickhouse-operator -n signoz --timeout=180s
           kubectl rollout status statefulset/signoz-zookeeper -n signoz --timeout=180s
           kubectl rollout status deployment/signoz-otel-collector -n signoz --timeout=180s
           kubectl rollout status statefulset/signoz -n signoz --timeout=180s
-          kubectl rollout status daemonset/otel-collector -n observability --timeout=180s
+          kubectl wait --for=condition=Ready pod/chi-signoz-clickhouse-cluster-0-0-0 -n signoz --timeout=300s
 
       - name: Wait for telemetrystore migration job
         run: |
