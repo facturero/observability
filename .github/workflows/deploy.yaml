@@ -16,6 +16,11 @@ jobs:
     # el cluster .149 cuando sea necesario.)
     runs-on: obs
 
+    # El kubectl del runner es el embebido de k3s: sin KUBECONFIG intenta
+    # /etc/rancher/k3s/k3s.yaml (raiz-only) y el job muere con exit 1.
+    env:
+      KUBECONFIG: /home/obs/.kube/config
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
