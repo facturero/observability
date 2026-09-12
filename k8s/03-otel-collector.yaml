@@ -53,9 +53,58 @@ data:
             endpoint: 0.0.0.0:4317
           http:
             endpoint: 0.0.0.0:4318
+      # Métricas del host para la pantalla Infrastructure de SigNoz. Como el
+      # colector corre en un contenedor, root_path apunta al hostPath montado
+      # en /hostfs; sin eso lee las cifras del contenedor, no las del nodo.
+      hostmetrics:
+        collection_interval: 30s
+        root_path: /hostfs
+        scrapers:
+          cpu:
+          load:
+          memory:
+          disk:
+          network:
+          filesystem:
+            exclude_fs_types:
+              match_type: strict
+              fs_types: [autofs, binfmt_misc, bpf, cgroup2, configfs, debugfs,
+                         devpts, devtmpfs, fusectl, hugetlbfs, iso9660, mqueue,
+                         nsfs, overlay, proc, procfs, pstore, rpc_pipefs,
+                         securityfs, selinuxfs, squashfs, sysfs, tracefs]
+            exclude_mount_points:
+              match_type: regexp
+              mount_points: ["/dev/.*", "/proc/.*", "/sys/.*", "/run/.*",
+                             "/var/lib/kubelet/.*", "/var/lib/rancher/.*"]
+      # Logs de todos los contenedores del nodo. k3s los escribe como ficheros
+      # reales en /var/log/pods con modo 640 root:root, así que el contenedor
+      # necesita runAsUser 0 (ver securityContext del DaemonSet) para leerlos.
+      filelog:
+        include: [/var/log/pods/*/*/*.log]
+        # Imprescindible: sin esta exclusión el colector se lee a sí mismo y
+        # cada log genera otro log, en bucle infinito.
+        exclude: [/var/log/pods/observability_otel-collector-*/*/*.log]
+        include_file_path: true
+        # Solo lo nuevo. Sin esto reingiere de golpe todo el histórico del nodo.
+        start_at: end
+        retry_on_failure:
+          enabled: true
+        operators:
+          # Entiende el formato de containerd y saca namespace, pod y contenedor
+          # de la ruta, que es lo que k8sattributes usa para enriquecer después.
+          - type: container
+            add_metadata_from_filepath: true
     processors:
       k8sattributes:
       batch:
+      # Sin host.name la pantalla Infrastructure no agrupa nada. El detector
+      # env lo lee de OTEL_RESOURCE_ATTRIBUTES, que el DaemonSet rellena con
+      # el nombre real del nodo vía downward API (no el del pod).
+      resourcedetection:
+        detectors: [env, system]
+        timeout: 5s
+        system:
+          hostname_sources: [os]
     connectors:
       spanmetrics:
         histogram:
@@ -79,6 +128,16 @@ data:
           receivers: [otlp, spanmetrics]
           processors: [batch]
           exporters: [otlp/signoz]
+        # Pipeline aparte para que resourcedetection solo toque las métricas
+        # del host y no sobreescriba los recursos que ya traen los servicios.
+        metrics/host:
+          receivers: [hostmetrics]
+          processors: [resourcedetection, batch]
+          exporters: [otlp/signoz]
+        logs:
+          receivers: [filelog]
+          processors: [k8sattributes, resourcedetection, batch]
+          exporters: [otlp/signoz]
 ---
 apiVersion: apps/v1
 kind: DaemonSet
@@ -100,25 +159,57 @@ spec:
           image: otel/opentelemetry-collector-contrib:0.117.0
           args:
             - --config=/conf/otel-collector-config.yaml
+          # La imagen corre como UID 10001, que NO puede leer /var/log/pods
+          # (modo 640 root:root). Sin esto el receptor filelog falla con
+          # permission denied y no entra ni una línea.
+          securityContext:
+            runAsUser: 0
+            runAsGroup: 0
           ports:
             - name: otlp-grpc
               containerPort: 4317
             - name: otlp-http
               containerPort: 4318
+          env:
+            - name: K8S_NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: OTEL_RESOURCE_ATTRIBUTES
+              value: host.name=$(K8S_NODE_NAME)
           volumeMounts:
             - name: config
               mountPath: /conf
+            - name: hostfs
+              mountPath: /hostfs
+              readOnly: true
+              mountPropagation: HostToContainer
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
           resources:
             requests:
               memory: "128Mi"
               cpu: "100m"
             limits:
-              memory: "512Mi"
+              # Subido de 512Mi al añadir filelog: mantiene en memoria el
+              # estado de lectura de cada fichero mientras hace el batch.
+              memory: "1Gi"
               cpu: "500m"
       volumes:
         - name: config
           configMap:
             name: otel-collector-config
+        # Raíz del nodo en solo lectura: es lo que lee hostmetrics vía root_path.
+        - name: hostfs
+          hostPath:
+            path: /
+        # Logs de contenedores. Se monta aparte de /hostfs para que las rutas
+        # dentro del contenedor coincidan con las reales y el operador
+        # container pueda deducir namespace, pod y contenedor.
+        - name: varlog
+          hostPath:
+            path: /var/log
 ---
 apiVersion: v1
 kind: Service

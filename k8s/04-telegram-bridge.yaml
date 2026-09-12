@@ -1,0 +1,160 @@
+# Puente SigNoz -> Telegram. Corre en el cluster de OBSERVABILIDAD (.183),
+# junto a SigNoz, porque es su Alertmanager quien llama al webhook.
+#
+# Por qué existe: SigNoz no tiene canal nativo de Telegram. Su webhook manda un
+# payload estilo Alertmanager, y la API de Telegram exige {chat_id, text}. Este
+# servicio traduce lo uno en lo otro y da formato legible al mensaje.
+#
+# El script va en un ConfigMap sobre la imagen oficial de node: así no hay que
+# construir ni publicar una imagen propia para 60 lineas de código.
+#
+# ANTES DE APLICAR, crear el secreto con los valores reales:
+#   kubectl create secret generic telegram-bridge -n signoz \
+#     --from-literal=TELEGRAM_BOT_TOKEN='123456:ABC-DEF...' \
+#     --from-literal=TELEGRAM_CHAT_ID='-1001234567890'
+#
+# Luego, en SigNoz: Settings -> Alert Channels -> New -> Webhook
+#   URL: http://telegram-bridge.signoz.svc.cluster.local:8080
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: telegram-bridge-src
+  namespace: signoz
+data:
+  server.js: |
+    const http = require('http');
+    const https = require('https');
+
+    const TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
+    const CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+    const PORT = Number(process.env.PORT || 8080);
+
+    // Telegram rompe el mensaje si llegan < > & sin escapar en modo HTML.
+    const esc = (s) => String(s == null ? '' : s)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    function enviar(text) {
+      return new Promise((resolve) => {
+        if (!TOKEN || !CHAT_ID) {
+          console.error('falta TELEGRAM_BOT_TOKEN o TELEGRAM_CHAT_ID; no se envia');
+          return resolve();
+        }
+        const body = JSON.stringify({
+          chat_id: CHAT_ID, text, parse_mode: 'HTML', disable_web_page_preview: true,
+        });
+        const req = https.request({
+          hostname: 'api.telegram.org',
+          path: '/bot' + TOKEN + '/sendMessage',
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Content-Length': Buffer.byteLength(body),
+          },
+        }, (res) => {
+          let d = '';
+          res.on('data', (c) => { d += c; });
+          res.on('end', () => {
+            if (res.statusCode >= 300) console.error('telegram', res.statusCode, d);
+            resolve();
+          });
+        });
+        req.on('error', (e) => { console.error('telegram error', e.message); resolve(); });
+        req.write(body);
+        req.end();
+      });
+    }
+
+    function formatear(payload) {
+      const alerts = Array.isArray(payload.alerts) ? payload.alerts : [];
+      return alerts.map((a) => {
+        const labels = a.labels || {};
+        const anots = a.annotations || {};
+        const disparada = (a.status || payload.status) === 'firing';
+        const nombre = labels.alertname || payload.receiver || 'alerta';
+        const servicio = labels.service_name || labels.serviceName || '';
+        const desc = anots.description || anots.summary || '';
+        const lineas = [(disparada ? '\u{1F534}' : '\u{2705}') + ' <b>' + esc(nombre) + '</b>'];
+        if (labels.severity) lineas.push('severidad: ' + esc(labels.severity));
+        if (servicio) lineas.push('servicio: <code>' + esc(servicio) + '</code>');
+        if (desc) lineas.push(esc(desc));
+        lineas.push(disparada ? 'estado: DISPARADA' : 'estado: RESUELTA');
+        return lineas.join('\n');
+      });
+    }
+
+    http.createServer((req, res) => {
+      if (req.method !== 'POST') { res.writeHead(200); return res.end('ok'); }
+      let data = '';
+      req.on('data', (c) => {
+        data += c;
+        if (data.length > 1e6) req.destroy();   // corta payloads absurdos
+      });
+      req.on('end', async () => {
+        let payload = {};
+        try { payload = JSON.parse(data || '{}'); } catch (e) { payload = {}; }
+        let mensajes = formatear(payload);
+        if (mensajes.length === 0) {
+          mensajes = ['\u{1F514} alerta de SigNoz sin alertas en el cuerpo'];
+        }
+        for (const m of mensajes) await enviar(m);
+        res.writeHead(200);
+        res.end('ok');
+      });
+    }).listen(PORT, () => console.log('telegram-bridge escuchando en ' + PORT));
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: telegram-bridge
+  namespace: signoz
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: telegram-bridge
+  template:
+    metadata:
+      labels:
+        app: telegram-bridge
+    spec:
+      containers:
+        - name: bridge
+          image: node:20-alpine
+          command: ["node", "/app/server.js"]
+          envFrom:
+            - secretRef:
+                name: telegram-bridge
+          ports:
+            - containerPort: 8080
+          volumeMounts:
+            - name: src
+              mountPath: /app
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+          resources:
+            requests:
+              memory: "32Mi"
+              cpu: "10m"
+            limits:
+              memory: "128Mi"
+              cpu: "200m"
+      volumes:
+        - name: src
+          configMap:
+            name: telegram-bridge-src
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: telegram-bridge
+  namespace: signoz
+spec:
+  selector:
+    app: telegram-bridge
+  ports:
+    - port: 8080
+      targetPort: 8080
