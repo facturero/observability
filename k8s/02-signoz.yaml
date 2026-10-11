@@ -908,16 +908,22 @@ spec:
       # Registros INTERNOS de ClickHouse (no son la telemetría de SigNoz, que vive en las bases signoz_*). Sin retención crecen
       # sin límite: el 2026-10-08 llegaron a 65 GB (trace_log 31, text_log 8,5, query_log 8,2, processors_profile_log 7,7...)
       # contra 6 GB de telemetría real, el nodo entró en DiskPressure y SigNoz estuvo 3 días caído.
-      # `remove` los apaga: el volcado del perfilador y el perfil por procesador solo sirven para depurar el propio ClickHouse
-      # y eran lo más grande. El resto se queda 3 días, suficiente para diagnosticar una consulta lenta reciente.
+      # Todos 3 días, suficiente para diagnosticar una consulta lenta reciente. NO se apagan con `remove="remove"`: en
+      # ClickHouse 25.x la sección desaparece de la configuración cargada pero la tabla se crea igual con sus valores por
+      # defecto (verificado el 2026-10-11: trace_log seguía escribiéndose). trace_log y processors_profile_log eran lo más
+      # grande (31 y 7,7 GB), así que su retención es la que más importa.
       # OJO: el TTL solo se aplica a tablas CREADAS con él. Si la tabla ya existía sin TTL, ClickHouse la deja como está (o la
       # renombra a `*_0` y crea otra, duplicando el espacio): tras desplegar un cambio aquí, listar `system.tables` y hacer
       # `DROP TABLE system.<tabla>_0 SYNC` de las que sobren, o `DROP TABLE system.<tabla> SYNC` + reinicio para recrearla con TTL.
       # La telemetría de SigNoz no se toca: su retención se fija en la UI (Settings → General).
       config.d/system_log.xml: |
         <clickhouse>
-          <trace_log remove="remove"/>
-          <processors_profile_log remove="remove"/>
+          <trace_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </trace_log>
+          <processors_profile_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </processors_profile_log>
           <text_log>
             <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
           </text_log>
