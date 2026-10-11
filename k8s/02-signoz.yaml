@@ -905,8 +905,19 @@ spec:
         <clickhouse>
           <async_load_databases replace="replace">false</async_load_databases>
         </clickhouse>
+      # Registros INTERNOS de ClickHouse (no son la telemetría de SigNoz, que vive en las bases signoz_*). Sin retención crecen
+      # sin límite: el 2026-10-08 llegaron a 65 GB (trace_log 31, text_log 8,5, query_log 8,2, processors_profile_log 7,7...)
+      # contra 6 GB de telemetría real, el nodo entró en DiskPressure y SigNoz estuvo 3 días caído.
+      # `remove` los apaga: el volcado del perfilador y el perfil por procesador solo sirven para depurar el propio ClickHouse
+      # y eran lo más grande. El resto se queda 3 días, suficiente para diagnosticar una consulta lenta reciente.
+      # OJO: el TTL solo se aplica a tablas CREADAS con él. Si la tabla ya existía sin TTL, ClickHouse la deja como está (o la
+      # renombra a `*_0` y crea otra, duplicando el espacio): tras desplegar un cambio aquí, listar `system.tables` y hacer
+      # `DROP TABLE system.<tabla>_0 SYNC` de las que sobren, o `DROP TABLE system.<tabla> SYNC` + reinicio para recrearla con TTL.
+      # La telemetría de SigNoz no se toca: su retención se fija en la UI (Settings → General).
       config.d/system_log.xml: |
         <clickhouse>
+          <trace_log remove="remove"/>
+          <processors_profile_log remove="remove"/>
           <text_log>
             <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
           </text_log>
@@ -919,6 +930,36 @@ spec:
           <query_metric_log>
             <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
           </query_metric_log>
+          <query_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </query_log>
+          <query_thread_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </query_thread_log>
+          <query_views_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </query_views_log>
+          <part_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </part_log>
+          <metric_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </metric_log>
+          <asynchronous_metric_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </asynchronous_metric_log>
+          <background_schedule_pool_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </background_schedule_pool_log>
+          <aggregated_zookeeper_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </aggregated_zookeeper_log>
+          <zookeeper_log>
+            <ttl>event_date + INTERVAL 3 DAY DELETE</ttl>
+          </zookeeper_log>
+          <session_log>
+            <ttl>event_date + INTERVAL 7 DAY DELETE</ttl>
+          </session_log>
         </clickhouse>
 
     zookeeper:
