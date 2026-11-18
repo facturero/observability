@@ -120,7 +120,7 @@ spec:
     spec:
       containers:
         - name: bridge
-          image: node:20-alpine
+          image: node:24-alpine
           command: ["node", "/app/server.js"]
           envFrom:
             - secretRef:
